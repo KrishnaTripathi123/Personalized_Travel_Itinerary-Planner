@@ -40,8 +40,11 @@ class RecommenderService:
         
         # Algorithmic scoring
         scored_destinations = []
+        clean_vibe = vibe_preference.split("🏖️")[0].split("🏔️")[0].split("🏛️")[0].split("🏙️")[0].split("🍲")[0].split("🌿")[0].split("🏄‍♂️")[0].split("🕯️")[0].strip().rstrip(",-")
+        clean_party = travel_party.split("🎒")[0].split("💑")[0].split("👨‍👩‍👧‍👦")[0].split("👥")[0].split("💼")[0].strip()
+
         for dest in CURATED_DESTINATIONS:
-            score = 60  # Base compatibility
+            score = 50  # Base compatibility
 
             # 1. Vibe matching
             vibe_keywords = vibe_preference.lower()
@@ -66,8 +69,36 @@ class RecommenderService:
             else:
                 score += 2  # Still visitable
 
+            # 4. Travel party compatibility
+            party_lower = travel_party.lower()
+            if "solo" in party_lower:
+                if dest["name"] in ["Tokyo", "Kyoto", "Barcelona", "Manali & Solang", "Jaipur", "Rome"]:
+                    score += 10
+                else:
+                    score += 4
+            elif "couple" in party_lower or "romantic" in party_lower:
+                if any("romantic" in v.lower() for v in dest["vibes"]) or dest["name"] in ["Amalfi Coast", "Kyoto", "Paris", "Manali & Solang", "Rome", "Bali"]:
+                    score += 10
+                else:
+                    score += 4
+            elif "family" in party_lower or "kid" in party_lower:
+                if dest["name"] in ["Tokyo", "Zurich & Interlaken", "Bali", "Paris", "Cape Town"]:
+                    score += 10
+                else:
+                    score += 4
+            elif "friend" in party_lower or "group" in party_lower:
+                if any(v in ["Beach & Coastal Escapes 🏖️", "Urban Skylines & Nightlife 🏙️", "Thrilling Outdoor Adventure 🏄‍♂️"] for v in dest["vibes"]):
+                    score += 10
+                else:
+                    score += 4
+            elif "business" in party_lower:
+                if dest["name"] in ["Tokyo", "New York City", "Dubai", "Paris"]:
+                    score += 10
+                else:
+                    score += 4
+
             # Normalize to max 98%
-            final_score = min(98, max(65, score))
+            final_score = min(98, max(60, score))
             scored_destinations.append((final_score, dest))
 
         # Sort descending by score
@@ -80,7 +111,7 @@ class RecommenderService:
             daily_inr = round(daily_usd * CURRENCY_RATES["INR"], 1)
 
             why = (
-                f"Exceptional match for {vibe_preference.split()[0]} seekers traveling as {travel_party.split()[0]}. "
+                f"Exceptional match for {clean_vibe} seekers traveling as {clean_party}. "
                 f"{dest['name']} in {dest['country']} boasts world-renowned {dest['highlight_tags'][0]} and {dest['highlight_tags'][1]}. "
                 f"Visiting in {active_month} aligns perfectly with its {dest['climate_season']} season."
             )

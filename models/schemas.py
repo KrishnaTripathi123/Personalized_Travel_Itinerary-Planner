@@ -132,6 +132,8 @@ class DayItinerary:
         )
         if not inst.daily_cost_usd and slots:
             inst.recalculate_totals()
+        elif (not inst.daily_cost_inr or inst.daily_cost_inr <= 0) and inst.daily_cost_usd > 0:
+            inst.daily_cost_inr = round(inst.daily_cost_usd * 85.0, 2)
         return inst
 
 
@@ -189,6 +191,8 @@ class TripRecord:
         )
         if not inst.total_cost_usd and days:
             inst.recalculate_totals()
+        elif (not inst.total_cost_inr or inst.total_cost_inr <= 0) and inst.total_cost_usd > 0:
+            inst.total_cost_inr = round(inst.total_cost_usd * 85.0, 2)
         return inst
 
 

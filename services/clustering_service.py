@@ -29,9 +29,11 @@ def estimate_transit_info(distance_km: float) -> Tuple[str, float]:
     """
     Returns (transit_description, estimated_minutes) based on urban transit models.
     """
-    if distance_km <= 1.2:
+    if distance_km < 0.1:
+        return "Under 3 min stroll in same complex (<0.1 km)", 3.0
+    elif distance_km <= 1.2:
         # Walking speed ~ 4.5 km/h
-        minutes = max(5, int((distance_km / 4.5) * 60))
+        minutes = max(4, int((distance_km / 4.5) * 60))
         return f"{minutes} min scenic stroll ({distance_km:.1f} km)", float(minutes)
     elif distance_km <= 5.0:
         # Short metro/tram/cab ~ 20 km/h with 4 min boarding overhead
@@ -105,8 +107,8 @@ def score_clustering_efficiency(day: DayItinerary) -> Dict[str, Any]:
         advice = "Stops span across multiple neighborhoods; use metro or rideshares between legs."
 
     return {
-        "total_transit_km": total_dist,
-        "max_leg_km": max_leg,
+        "total_transit_km": round(total_dist, 1),
+        "max_leg_km": round(max_leg, 1),
         "rating": rating,
         "badge_color": badge_color,
         "advice": advice

@@ -84,22 +84,27 @@ if "selected_model" not in st.session_state:
     st.session_state.selected_model = "gemini-1.5-flash"
 
 
-# Helper to auto-generate default Tokyo trip on first boot for instant delight
+# Helper to auto-generate default Tokyo trip on first boot for instant delight without duplicating
 if st.session_state.active_trip is None:
-    demo_days = LLMService.generate_itinerary(st.session_state.trip_preferences, provider="demo")
-    demo_trip = TripRecord(
-        id=str(uuid.uuid4())[:8],
-        trip_name="Tokyo Highlights & Hidden Alleys",
-        destination="Tokyo",
-        duration_days=3,
-        start_date=st.session_state.trip_preferences.start_date,
-        end_date=st.session_state.trip_preferences.end_date,
-        preferences=st.session_state.trip_preferences,
-        days=demo_days
-    )
-    demo_trip.recalculate_totals(CURRENCY_RATES["INR"])
-    st.session_state.active_trip = demo_trip
-    save_trip(demo_trip)
+    existing_trips = get_all_trips()
+    if existing_trips:
+        st.session_state.active_trip = existing_trips[0]
+        st.session_state.trip_preferences = existing_trips[0].preferences
+    else:
+        demo_days = LLMService.generate_itinerary(st.session_state.trip_preferences, provider="demo")
+        demo_trip = TripRecord(
+            id="demo_tokyo",
+            trip_name="Tokyo Highlights & Hidden Alleys",
+            destination="Tokyo",
+            duration_days=3,
+            start_date=st.session_state.trip_preferences.start_date,
+            end_date=st.session_state.trip_preferences.end_date,
+            preferences=st.session_state.trip_preferences,
+            days=demo_days
+        )
+        demo_trip.recalculate_totals(CURRENCY_RATES["INR"])
+        st.session_state.active_trip = demo_trip
+        save_trip(demo_trip)
 
 
 # -------------------------------------------------------------
@@ -162,7 +167,7 @@ with st.sidebar:
         )
         st.session_state.selected_model = st.selectbox(
             "Groq Model",
-            ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+            ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
         )
         st.session_state.api_key = api_key_input
         if api_key_input:
@@ -198,10 +203,15 @@ with st.sidebar:
         vibe_val = st.selectbox("Select Your Travel Vibe", VIBE_OPTIONS)
         dest_val = vibe_val.split()[0]  # Temporary anchor
 
-    # Duration & Dates
+    # Duration & Dates synchronized with preferences
+    try:
+        curr_start = datetime.strptime(st.session_state.trip_preferences.start_date, "%Y-%m-%d").date()
+    except Exception:
+        curr_start = date.today()
+
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        start_d = st.date_input("Start Date", value=date.today())
+        start_d = st.date_input("Start Date", value=curr_start)
     with col_d2:
         duration_input = st.slider("Duration (Days)", min_value=1, max_value=7, value=int(st.session_state.trip_preferences.duration_days))
 
@@ -217,26 +227,36 @@ with st.sidebar:
     b_info = BUDGET_TIERS[budget_lvl]
     st.caption(f"Estimated: **${b_info['min']} - ${b_info['max']}/day** ({b_info['desc']})")
 
-    # Travel Party & Pace
-    travel_party = st.selectbox("Travel Party", PARTY_TYPES, index=0)
+    # Travel Party & Pace synchronized
+    party_idx = PARTY_TYPES.index(st.session_state.trip_preferences.travel_party) if st.session_state.trip_preferences.travel_party in PARTY_TYPES else 0
+    travel_party = st.selectbox("Travel Party", PARTY_TYPES, index=party_idx)
+
+    pace_options = ["Relaxed", "Moderate", "Fast-Paced"]
+    p_idx = pace_options.index(st.session_state.trip_preferences.pace) if st.session_state.trip_preferences.pace in pace_options else 1
     pace_choice = st.selectbox(
         "Travel Pace",
-        ["Relaxed", "Moderate", "Fast-Paced"],
-        index=1,
+        pace_options,
+        index=p_idx,
         help="Controls number of stops and transit buffers."
     )
 
-    # Interests & Dietary
+    # Interests & Dietary synchronized
+    initial_interests = [i for i in st.session_state.trip_preferences.interests if i in INTEREST_TAGS]
+    if not initial_interests:
+        initial_interests = INTEREST_TAGS[:3]
+
     interests_chosen = st.multiselect(
         "Core Interests (Multi-select)",
         INTEREST_TAGS,
-        default=st.session_state.trip_preferences.interests[:3]
+        default=initial_interests
     )
 
+    dietary_options = ["Any / Flexible", "Vegetarian", "Vegan", "Halal", "Gluten-Free", "Jain"]
+    d_idx = dietary_options.index(st.session_state.trip_preferences.dietary) if st.session_state.trip_preferences.dietary in dietary_options else 0
     dietary_choice = st.selectbox(
         "Dietary & Lifestyle",
-        ["Any / Flexible", "Vegetarian", "Vegan", "Halal", "Gluten-Free", "Jain"],
-        index=0
+        dietary_options,
+        index=d_idx
     )
 
     # Action Button
@@ -278,6 +298,7 @@ with st.sidebar:
                 st.session_state.active_trip = new_trip
                 save_trip(new_trip)
                 st.toast(f"Plan generated for {updated_prefs.destination}!", icon="✨")
+                st.rerun()
             except Exception as e:
                 st.error(f"Error generating plan: {e}")
 
@@ -476,7 +497,7 @@ with tab2:
             )
             st.pydeck_chart(r, use_container_width=True)
         else:
-            st.info("Map coordinates loading...")
+            st.info("No geographic map coordinates available for this trip.")
 
         st.markdown("---")
 
@@ -488,12 +509,15 @@ with tab2:
                 {"Day": f"Day {d.day_number}", "Cost (USD)": d.daily_cost_usd, "Cost (INR)": d.daily_cost_inr}
                 for d in active_trip.days
             ])
-            daily_chart = alt.Chart(daily_chart_data).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color="#0D9488").encode(
-                x=alt.X("Day:N", title="Trip Day"),
-                y=alt.Y("Cost (USD):Q", title="Spend ($ USD)"),
-                tooltip=["Day", "Cost (USD)", "Cost (INR)"]
-            ).properties(height=240)
-            st.altair_chart(daily_chart, use_container_width=True)
+            if daily_chart_data.empty:
+                st.info("No daily spending data available.")
+            else:
+                daily_chart = alt.Chart(daily_chart_data).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color="#0D9488").encode(
+                    x=alt.X("Day:N", title="Trip Day"),
+                    y=alt.Y("Cost (USD):Q", title="Spend ($ USD)"),
+                    tooltip=["Day", "Cost (USD)", "Cost (INR)"]
+                ).properties(height=240)
+                st.altair_chart(daily_chart, use_container_width=True)
 
         with col_c2:
             st.markdown("##### 🥧 Category Spend Breakdown")
@@ -503,12 +527,15 @@ with tab2:
                     cat = s.category or "Sightseeing"
                     cat_totals[cat] = cat_totals.get(cat, 0.0) + s.estimated_cost_usd
             cat_chart_data = pd.DataFrame([{"Category": k, "Spend ($ USD)": v} for k, v in cat_totals.items()])
-            cat_chart = alt.Chart(cat_chart_data).mark_arc(innerRadius=45).encode(
-                theta=alt.Theta(field="Spend ($ USD)", type="quantitative"),
-                color=alt.Color(field="Category", type="nominal", scale=alt.Scale(scheme="tealblues")),
-                tooltip=["Category", "Spend ($ USD)"]
-            ).properties(height=240)
-            st.altair_chart(cat_chart, use_container_width=True)
+            if cat_chart_data.empty or cat_chart_data["Spend ($ USD)"].sum() == 0:
+                st.info("No categorical spend recorded for this trip.")
+            else:
+                cat_chart = alt.Chart(cat_chart_data).mark_arc(innerRadius=45).encode(
+                    theta=alt.Theta(field="Spend ($ USD)", type="quantitative"),
+                    color=alt.Color(field="Category", type="nominal", scale=alt.Scale(scheme="tealblues")),
+                    tooltip=["Category", "Spend ($ USD)"]
+                ).properties(height=240)
+                st.altair_chart(cat_chart, use_container_width=True)
 
         st.markdown("---")
 
@@ -573,7 +600,7 @@ with tab3:
     st.markdown("Easily customize your trip on the fly. Swap out any individual activity or regenerate single days without wiping out the rest of your itinerary.")
 
     active_trip: TripRecord = st.session_state.active_trip
-    if not active_trip:
+    if not active_trip or not active_trip.days:
         st.info("No active trip to customize. Please generate an itinerary in the sidebar first.")
     else:
         col_s1, col_s2 = st.columns([1, 2])
@@ -603,22 +630,24 @@ with tab3:
         with col_s2:
             st.markdown("#### 2. Define Your Swap Intent")
             
-            # Preset Prompts
+            # Preset Prompts with state retention
+            if "swap_intent_text" not in st.session_state:
+                st.session_state.swap_intent_text = "Swap for an authentic local artisanal market and coffee experience"
+
             st.markdown("**Quick Preset Prompts (Click to apply):**")
             p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-            preset_text = None
             if p_col1.button("🥗 Vegetarian / Vegan"):
-                preset_text = "Find a top-rated organic vegetarian or vegan dining spot with local specialties"
+                st.session_state.swap_intent_text = "Find a top-rated organic vegetarian or vegan dining spot with local specialties"
             if p_col2.button("🌧️ Rainy Day Indoor"):
-                preset_text = "Sheltered indoor museum, art gallery, or artisan market safe from rain"
+                st.session_state.swap_intent_text = "Sheltered indoor museum, art gallery, or artisan market safe from rain"
             if p_col3.button("💰 Budget / Free"):
-                preset_text = "Free scenic walking route, historic public park, or budget viewpoint"
+                st.session_state.swap_intent_text = "Free scenic walking route, historic public park, or budget viewpoint"
             if p_col4.button("⚡ High Energy"):
-                preset_text = "High-energy adventure, bike tour, watersport, or adrenaline experience"
+                st.session_state.swap_intent_text = "High-energy adventure, bike tour, watersport, or adrenaline experience"
 
             swap_query = st.text_area(
                 "Or Describe Custom Intent:",
-                value=preset_text if preset_text else "Swap for an authentic local artisanal market and coffee experience",
+                value=st.session_state.swap_intent_text,
                 height=90,
                 help="E.g., 'Swap museum for outdoor artisanal market', 'Find a rooftop cocktail bar', etc."
             )
@@ -629,52 +658,64 @@ with tab3:
             with col_b1:
                 if st.button("🔄 Swap This Single Activity", type="primary", use_container_width=True):
                     with st.spinner("Swapping slot while preserving geographic cluster..."):
-                        new_slot = LLMService.swap_single_slot(
-                            target_slot=chosen_slot,
-                            day_context=chosen_day,
-                            swap_intent=swap_query,
-                            preferences=active_trip.preferences,
-                            provider=st.session_state.provider,
-                            api_key=st.session_state.api_key
-                        )
-                        # Replace in session state
-                        chosen_day.slots[selected_slot_idx] = new_slot
-                        chosen_day = optimize_day_geographic_routing(chosen_day)
-                        chosen_day.recalculate_totals(CURRENCY_RATES["INR"])
-                        active_trip.recalculate_totals(CURRENCY_RATES["INR"])
-                        save_trip(active_trip)
-                        st.success(f"Slot '{chosen_slot.slot_title}' successfully replaced with: **{new_slot.title}**!")
-                        st.rerun()
+                        try:
+                            new_slot = LLMService.swap_single_slot(
+                                target_slot=chosen_slot,
+                                day_context=chosen_day,
+                                swap_intent=swap_query,
+                                preferences=active_trip.preferences,
+                                provider=st.session_state.provider,
+                                api_key=st.session_state.api_key
+                            )
+                            chosen_day.slots[selected_slot_idx] = new_slot
+                            chosen_day = optimize_day_geographic_routing(chosen_day)
+                            chosen_day.recalculate_totals(CURRENCY_RATES["INR"])
+                            active_trip.recalculate_totals(CURRENCY_RATES["INR"])
+                            save_trip(active_trip)
+                            st.success(f"Slot '{chosen_slot.slot_title}' successfully replaced with: **{new_slot.title}**!")
+                            st.rerun()
+                        except Exception as swap_err:
+                            st.error(f"Failed to swap slot: {swap_err}")
 
             with col_b2:
                 if st.button("🔁 Regenerate Entire Day Plan", use_container_width=True):
                     with st.spinner(f"Regenerating Day {chosen_day.day_number} plan..."):
-                        # Temporary 1-day prefs
-                        single_day_prefs = TripPreferences(
-                            destination=active_trip.destination,
-                            duration_days=1,
-                            start_date=chosen_day.date_str,
-                            end_date=chosen_day.date_str,
-                            budget_level=active_trip.preferences.budget_level,
-                            travel_party=active_trip.preferences.travel_party,
-                            pace=active_trip.preferences.pace,
-                            interests=active_trip.preferences.interests,
-                            dietary=active_trip.preferences.dietary
-                        )
-                        fresh_days = LLMService.generate_itinerary(
-                            single_day_prefs,
-                            provider=st.session_state.provider,
-                            api_key=st.session_state.api_key
-                        )
-                        if fresh_days:
-                            fresh_day = fresh_days[0]
-                            fresh_day.day_number = chosen_day.day_number
-                            fresh_day.date_str = chosen_day.date_str
-                            active_trip.days[selected_day_idx] = fresh_day
-                            active_trip.recalculate_totals(CURRENCY_RATES["INR"])
-                            save_trip(active_trip)
-                            st.success(f"Day {chosen_day.day_number} regenerated with fresh cluster: **{fresh_day.zone_cluster}**!")
-                            st.rerun()
+                        try:
+                            try:
+                                base_start = datetime.strptime(active_trip.start_date, "%Y-%m-%d")
+                                day_date_str = (base_start + timedelta(days=selected_day_idx)).strftime("%Y-%m-%d")
+                            except Exception:
+                                day_date_str = str(date.today())
+
+                            single_day_prefs = TripPreferences(
+                                destination=active_trip.destination,
+                                duration_days=1,
+                                start_date=day_date_str,
+                                end_date=day_date_str,
+                                budget_level=active_trip.preferences.budget_level,
+                                travel_party=active_trip.preferences.travel_party,
+                                pace=active_trip.preferences.pace,
+                                interests=active_trip.preferences.interests,
+                                dietary=active_trip.preferences.dietary
+                            )
+                            fresh_days = LLMService.generate_itinerary(
+                                single_day_prefs,
+                                provider=st.session_state.provider,
+                                api_key=st.session_state.api_key
+                            )
+                            if fresh_days:
+                                fresh_day = fresh_days[0]
+                                fresh_day.day_number = chosen_day.day_number
+                                fresh_day.date_str = chosen_day.date_str
+                                active_trip.days[selected_day_idx] = fresh_day
+                                active_trip.recalculate_totals(CURRENCY_RATES["INR"])
+                                save_trip(active_trip)
+                                st.success(f"Day {chosen_day.day_number} regenerated with fresh cluster: **{fresh_day.zone_cluster}**!")
+                                st.rerun()
+                            else:
+                                st.error("No itinerary generated for the selected day.")
+                        except Exception as reg_err:
+                            st.error(f"Failed to regenerate day: {reg_err}")
 
 
 # =============================================================
@@ -706,7 +747,8 @@ with tab4:
 
             try:
                 pdf_bytes = generate_itinerary_pdf(active_trip)
-                clean_filename = f"{active_trip.destination.lower()}_travel_guide_{active_trip.id}.pdf"
+                clean_dest = "".join([c if c.isalnum() else "_" for c in active_trip.destination.lower()]).strip("_")
+                clean_filename = f"{clean_dest}_travel_guide_{active_trip.id}.pdf"
                 st.download_button(
                     label="📥 Download Offline PDF Travel Guide",
                     data=pdf_bytes,

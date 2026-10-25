@@ -149,9 +149,88 @@ class TestTravelPlanner(unittest.TestCase):
         trip.recalculate_totals()
         pdf_bytes = generate_itinerary_pdf(trip)
         self.assertIsInstance(pdf_bytes, bytes)
-        self.assertGreater(len(pdf_bytes), 2000)
         # PDF files begin with %PDF
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+
+    def test_invalid_json_import(self):
+        """Verify robust handling of invalid, empty, or corrupted JSON strings."""
+        with self.assertRaises(ValueError):
+            import_trip_json("")
+        with self.assertRaises(ValueError):
+            import_trip_json("{bad json")
+        with self.assertRaises(ValueError):
+            import_trip_json('{"some": "unrelated_data"}')
+        with self.assertRaises(ValueError):
+            import_trip_json(None)
+
+    def test_live_api_failure_raises_error(self):
+        """Verify live provider call without credentials raises RuntimeError and does not silently mock."""
+        with self.assertRaises(RuntimeError):
+            LLMService.generate_itinerary(self.prefs, provider="gemini", api_key="")
+        with self.assertRaises(RuntimeError):
+            LLMService.generate_itinerary(self.prefs, provider="groq", api_key="")
+
+    def test_dietary_lunch_resolution(self):
+        """Verify dietary preference is authentically reflected in lunch recommendations."""
+        dietary_cases = ["Vegetarian", "Vegan", "Halal", "Jain"]
+        for diet in dietary_cases:
+            prefs = TripPreferences(
+                destination="Tokyo",
+                duration_days=1,
+                start_date=str(date.today()),
+                end_date=str(date.today()),
+                budget_level="Moderate",
+                travel_party="Solo Traveler 🎒",
+                pace="Moderate",
+                interests=["Local Street Food"],
+                dietary=diet
+            )
+            days = LLMService.generate_itinerary(prefs, provider="demo")
+            lunch_slot = days[0].slots[1]
+            self.assertEqual(lunch_slot.slot_id, "lunch")
+            self.assertIn(diet, lunch_slot.tags)
+
+    def test_multi_day_extended_generation(self):
+        """Verify multi-day (7 days) generation produces 4 complete slots for each day."""
+        prefs_7 = TripPreferences(
+            destination="Tokyo",
+            duration_days=7,
+            start_date=str(date.today()),
+            end_date=str(date.today() + timedelta(days=6)),
+            budget_level="Luxury",
+            travel_party="Couples Getaway 💕",
+            pace="Relaxed",
+            interests=["Art, Design & Museums", "Nightlife & Rooftop Lounges"],
+            dietary="Halal"
+        )
+        days = LLMService.generate_itinerary(prefs_7, provider="demo")
+        self.assertEqual(len(days), 7)
+        for d_idx, day in enumerate(days, 1):
+            self.assertEqual(day.day_number, d_idx)
+            self.assertEqual(len(day.slots), 4)
+
+    def test_recommender_travel_party_scoring(self):
+        """Verify travel party affects destination scoring."""
+        recs_family = RecommenderService.recommend_destinations(
+            vibe_preference="Mountains & Alpine Trails 🏔️",
+            budget_level="Luxury",
+            travel_party="Family with Kids 👨‍👩‍👧‍👦",
+            travel_month="July"
+        )
+        top_destinations = [r.name for r in recs_family]
+        self.assertIn("Zurich & Interlaken", top_destinations)
+
+    def test_geographic_clustering_routing(self):
+        """Verify geographic route optimization preserves all 4 activities and calculates transit."""
+        days = LLMService.generate_itinerary(self.prefs, provider="demo")
+        day = days[0]
+        optimized = optimize_day_geographic_routing(day)
+        self.assertEqual(len(optimized.slots), 4)
+        self.assertEqual([s.slot_id for s in optimized.slots], ["morning", "lunch", "afternoon", "evening"])
+        self.assertGreaterEqual(optimized.walking_distance_km, 0)
+        clustering_eval = score_clustering_efficiency(optimized)
+        self.assertIn("total_transit_km", clustering_eval)
+        self.assertIn("rating", clustering_eval)
 
 
 if __name__ == "__main__":

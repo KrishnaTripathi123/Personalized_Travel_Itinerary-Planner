@@ -5,6 +5,7 @@ emergency contact checklists, and packing guidelines.
 """
 
 import io
+import html
 from typing import Optional
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -13,7 +14,16 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 )
 from models.schemas import TripRecord
-from config.settings import CURATED_DESTINATIONS
+from config.settings import CURATED_DESTINATIONS, CURRENCY_RATES
+
+
+def _clean_pdf_text(text: Optional[str]) -> str:
+    """Escapes XML entities so ReportLab Paragraph parsers never raise parse errors."""
+    if not text:
+        return ""
+    # Strip emojis that could render as unprintable square boxes in standard Type 1 Helvetica
+    cleaned = text.encode("ascii", "ignore").decode("ascii").strip()
+    return html.escape(cleaned)
 
 
 def generate_itinerary_pdf(trip: TripRecord) -> bytes:
@@ -45,8 +55,8 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
         "CoverTitle",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=22,
-        leading=26,
+        fontSize=20,
+        leading=24,
         textColor=colors.white,
         alignment=1  # Center
     )
@@ -65,10 +75,10 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
         "Heading1_Custom",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
-        fontSize=15,
-        leading=19,
+        fontSize=14,
+        leading=18,
         textColor=c_primary,
-        spaceBefore=14,
+        spaceBefore=12,
         spaceAfter=6
     )
 
@@ -109,10 +119,19 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
 
     story = []
 
+    dest_title = _clean_pdf_text(trip.destination.upper())
+    trip_title = _clean_pdf_text(trip.trip_name)
+    start_d = _clean_pdf_text(trip.start_date)
+    end_d = _clean_pdf_text(trip.end_date)
+    party_str = _clean_pdf_text(trip.preferences.travel_party.split()[0] if trip.preferences.travel_party else "Solo")
+    pace_str = _clean_pdf_text(trip.preferences.pace.split()[0] if trip.preferences.pace else "Moderate")
+    diet_str = _clean_pdf_text(trip.preferences.dietary or "Any / Flexible")
+    tier_str = _clean_pdf_text(trip.preferences.budget_level or "Moderate")
+
     # 1. HEADER BANNER
     header_data = [
-        [Paragraph(f"✈ {trip.destination.upper()} TRAVEL GUIDE", title_style)],
-        [Paragraph(f"{trip.trip_name} • {trip.start_date} to {trip.end_date} • {trip.duration_days} Days", subtitle_style)]
+        [Paragraph(f"{dest_title} TRAVEL GUIDE", title_style)],
+        [Paragraph(f"{trip_title}  |  {start_d} to {end_d}  |  {trip.duration_days} Days", subtitle_style)]
     ]
     header_table = Table(header_data, colWidths=[540])
     header_table.setStyle(TableStyle([
@@ -128,21 +147,22 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
     story.append(Spacer(1, 14))
 
     # 2. TRIP OVERVIEW MATRIX
+    interests_display = ", ".join([_clean_pdf_text(i) for i in trip.preferences.interests[:2]]) if trip.preferences.interests else "General Sights"
     overview_data = [
         [
-            Paragraph("<b>Destination:</b> " + trip.destination, body_style),
+            Paragraph("<b>Destination:</b> " + _clean_pdf_text(trip.destination), body_style),
             Paragraph(f"<b>Duration:</b> {trip.duration_days} Days", body_style),
-            Paragraph(f"<b>Travel Party:</b> {trip.preferences.travel_party.split()[0]}", body_style),
+            Paragraph(f"<b>Travel Party:</b> {party_str}", body_style),
         ],
         [
-            Paragraph(f"<b>Pace:</b> {trip.preferences.pace.split()[0]}", body_style),
-            Paragraph(f"<b>Budget Tier:</b> {trip.preferences.budget_level}", body_style),
-            Paragraph(f"<b>Dietary:</b> {trip.preferences.dietary}", body_style),
+            Paragraph(f"<b>Pace:</b> {pace_str}", body_style),
+            Paragraph(f"<b>Budget Tier:</b> {tier_str}", body_style),
+            Paragraph(f"<b>Dietary:</b> {diet_str}", body_style),
         ],
         [
-            Paragraph(f"<b>Total Est. Cost:</b> ${trip.total_cost_usd:,.0f} USD (₹{trip.total_cost_inr:,.0f})", bold_body_style),
-            Paragraph(f"<b>Interests:</b> {', '.join(trip.preferences.interests[:2])}", body_style),
-            Paragraph(f"<b>Status:</b> Ready for Departure", body_style),
+            Paragraph(f"<b>Total Est. Cost:</b> ${trip.total_cost_usd:,.0f} USD (INR {trip.total_cost_inr:,.0f})", bold_body_style),
+            Paragraph(f"<b>Interests:</b> {interests_display}", body_style),
+            Paragraph(f"<b>Status:</b> Confirmed & Optimized", body_style),
         ]
     ]
     overview_table = Table(overview_data, colWidths=[180, 180, 180])
@@ -159,63 +179,76 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
     story.append(Spacer(1, 14))
 
     # 3. DAY-BY-DAY ITINERARY SCHEDULE
-    story.append(Paragraph("📅 Day-by-Day Optimized Itinerary", h1_style))
-    story.append(Paragraph("Each day's activities are clustered geographically to minimize transit fatigue and eliminate backtracking.", small_style))
+    story.append(Paragraph("Day-by-Day Optimized Itinerary", h1_style))
+    story.append(Paragraph("Activities are clustered geographically by neighborhood to eliminate transit backtracking and minimize fatigue.", small_style))
     story.append(Spacer(1, 8))
 
-    for day in trip.days:
-        day_elements = []
-        day_title = f"Day {day.day_number} — {day.theme} ({day.zone_cluster})"
-        day_elements.append(Paragraph(day_title, day_header_style))
+    if not trip.days:
+        story.append(Paragraph("No daily activities currently scheduled for this trip.", body_style))
+        story.append(Spacer(1, 10))
+    else:
+        for day in trip.days:
+            day_elements = []
+            day_theme = _clean_pdf_text(day.theme)
+            day_zone = _clean_pdf_text(day.zone_cluster)
+            day_title = f"Day {day.day_number} -- {day_theme} ({day_zone})"
+            day_elements.append(Paragraph(day_title, day_header_style))
 
-        # Table rows for each slot
-        table_rows = [
-            [
-                Paragraph("<b>Time & Slot</b>", bold_body_style),
-                Paragraph("<b>Activity & Experience</b>", bold_body_style),
-                Paragraph("<b>Transit / Distance</b>", bold_body_style),
-                Paragraph("<b>Est. Cost</b>", bold_body_style)
+            table_rows = [
+                [
+                    Paragraph("<b>Time & Slot</b>", bold_body_style),
+                    Paragraph("<b>Activity & Experience</b>", bold_body_style),
+                    Paragraph("<b>Transit / Distance</b>", bold_body_style),
+                    Paragraph("<b>Est. Cost</b>", bold_body_style)
+                ]
             ]
-        ]
 
-        for s in day.slots:
-            slot_label = f"<b>{s.time_window}</b><br/><font color='#0D9488'>{s.slot_title}</font>"
-            activity_desc = f"<b>{s.title}</b><br/>{s.description}<br/><font color='#64748B'><i>Tip: {s.tips}</i></font>"
-            transit = f"{s.transit_info}<br/><font color='#94A3B8'>{s.location_name}</font>"
-            cost = f"${s.estimated_cost_usd:.0f}<br/>₹{s.estimated_cost_inr:.0f}"
+            for s in day.slots:
+                time_win = _clean_pdf_text(s.time_window)
+                slot_t = _clean_pdf_text(s.slot_title)
+                s_title = _clean_pdf_text(s.title)
+                s_desc = _clean_pdf_text(s.description)
+                s_tip = _clean_pdf_text(s.tips)
+                s_transit = _clean_pdf_text(s.transit_info)
+                s_loc = _clean_pdf_text(s.location_name)
 
-            table_rows.append([
-                Paragraph(slot_label, body_style),
-                Paragraph(activity_desc, body_style),
-                Paragraph(transit, small_style),
-                Paragraph(cost, body_style)
-            ])
+                slot_label = f"<b>{time_win}</b><br/><font color='#0D9488'>{slot_t}</font>"
+                activity_desc = f"<b>{s_title}</b><br/>{s_desc}<br/><font color='#64748B'><i>Tip: {s_tip}</i></font>"
+                transit = f"{s_transit}<br/><font color='#94A3B8'>{s_loc}</font>"
+                cost = f"${s.estimated_cost_usd:.0f} USD<br/>INR {s.estimated_cost_inr:,.0f}"
 
-        day_table = Table(table_rows, colWidths=[100, 240, 130, 70])
-        day_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ('LINEBELOW', (0, 0), (-1, 0), 1, c_secondary),
-            ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-            ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        day_elements.append(day_table)
+                table_rows.append([
+                    Paragraph(slot_label, body_style),
+                    Paragraph(activity_desc, body_style),
+                    Paragraph(transit, small_style),
+                    Paragraph(cost, body_style)
+                ])
 
-        summary_text = f"<b>Day {day.day_number} Summary:</b> Total Transit: ~{day.walking_distance_km} km | Daily Est. Spend: ${day.daily_cost_usd:.0f} (₹{day.daily_cost_inr:,.0f})"
-        day_elements.append(Spacer(1, 4))
-        day_elements.append(Paragraph(summary_text, small_style))
-        day_elements.append(Spacer(1, 10))
+            day_table = Table(table_rows, colWidths=[95, 235, 130, 80])
+            day_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+                ('LINEBELOW', (0, 0), (-1, 0), 1, c_secondary),
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            day_elements.append(day_table)
 
-        story.append(KeepTogether(day_elements))
+            summary_text = f"<b>Day {day.day_number} Summary:</b> Total Transit: ~{day.walking_distance_km} km | Daily Est. Spend: ${day.daily_cost_usd:.0f} USD (INR {day.daily_cost_inr:,.0f})"
+            day_elements.append(Spacer(1, 4))
+            day_elements.append(Paragraph(summary_text, small_style))
+            day_elements.append(Spacer(1, 10))
+
+            story.append(KeepTogether(day_elements))
 
     # 4. EMERGENCY CONTACTS & HELPLINES
     story.append(Spacer(1, 10))
-    story.append(Paragraph("🚨 Emergency Contacts & Safety Checklist", h1_style))
-    
+    story.append(Paragraph("Emergency Contacts & Safety Checklist", h1_style))
+
     # Retrieve destination specific numbers if available
     dest_match = next((d for d in CURATED_DESTINATIONS if d["name"].lower() in trip.destination.lower()), None)
     police_no = dest_match["emergency_contacts"]["police"] if dest_match else "112 / 911"
@@ -265,19 +298,19 @@ def generate_itinerary_pdf(trip: TripRecord) -> bytes:
 
     # 5. ESSENTIAL PACKING & DEPARTURE CHECKLIST
     story.append(Spacer(1, 10))
-    story.append(Paragraph("🧳 Essential Travel Preparation Checklist", h1_style))
+    story.append(Paragraph("Essential Travel Preparation Checklist", h1_style))
     checklist_text = (
-        "• <b>Documents:</b> Passport valid for at least 6 months, printed copies of travel visa, travel insurance policy card.<br/>"
-        "• <b>Finances:</b> Inform your bank of travel dates; carry at least 2 zero-forex debit/credit cards and a small amount of local currency cash.<br/>"
-        "• <b>Connectivity:</b> Download offline Google Maps for the city cluster; download Google Translate offline language pack.<br/>"
-        "• <b>Electronics:</b> Universal electrical travel adapter, 10,000mAh+ power bank for day-long sightseeing.<br/>"
-        "• <b>Health:</b> Basic first-aid kit with personal prescriptions, hydration electrolytes, blister bandages, and antacids."
+        "- <b>Documents:</b> Passport valid for at least 6 months, printed copies of travel visa, travel insurance policy card.<br/>"
+        "- <b>Finances:</b> Inform your bank of travel dates; carry at least 2 zero-forex debit/credit cards and a small amount of local currency cash.<br/>"
+        "- <b>Connectivity:</b> Download offline Google Maps for the city cluster; download Google Translate offline language pack.<br/>"
+        "- <b>Electronics:</b> Universal electrical travel adapter, 10,000mAh+ power bank for day-long sightseeing.<br/>"
+        "- <b>Health:</b> Basic first-aid kit with personal prescriptions, hydration electrolytes, blister bandages, and antacids."
     )
     story.append(Paragraph(checklist_text, body_style))
     story.append(Spacer(1, 14))
 
     # FOOTER
-    story.append(Paragraph("Generated by Wanderlust Personalized Travel Planner • Skill Wallet Capstone Project 4", small_style))
+    story.append(Paragraph("Generated by Wanderlust Personalized Travel Planner -- Skill Wallet Capstone Project 4", small_style))
 
     doc.build(story)
     pdf_bytes = buffer.getvalue()
